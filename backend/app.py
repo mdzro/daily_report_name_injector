@@ -2,6 +2,7 @@
 import hmac
 import os
 import tempfile
+from pathlib import Path
 import pandas as pd
 from flask import (
     Flask,
@@ -13,6 +14,24 @@ from flask import (
 )
 from bs4 import BeautifulSoup
 
+def load_env():
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    with env_path.open("r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip()
+
+
+load_env()
+
+
 app = Flask(__name__, static_folder=None)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "super-secret-key")
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -20,7 +39,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_BUILD = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "build"))
-ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD", "AjBH?D83784hgb")
+ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD")
 
 
 @app.before_request
@@ -93,7 +112,8 @@ def process():
 def login():
     payload = request.get_json(silent=True) or {}
     password = payload.get("password")
-    if not password or not hmac.compare_digest(str(password), str(ACCESS_PASSWORD)):
+    stored_password = ACCESS_PASSWORD or ""
+    if not password or not stored_password or not hmac.compare_digest(str(password), str(stored_password)):
         session.pop("authenticated", None)
         return jsonify({"success": False, "error": "Invalid password"}), 401
     session["authenticated"] = True
