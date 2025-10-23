@@ -1,14 +1,77 @@
 
 import os
+import secrets
 import tempfile
 import pandas as pd
-from flask import Flask, request, send_file, jsonify, send_from_directory
+from flask import (
+    Flask,
+    jsonify,
+    request,
+    send_file,
+    send_from_directory,
+    session,
+)
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
 app = Flask(__name__, static_folder=None)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_BUILD = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "build"))
+
+load_dotenv()
+
+ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD")
+if not ACCESS_PASSWORD:
+    raise RuntimeError("ACCESS_PASSWORD environment variable must be set")
+
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(16))
+
+
+def _is_authenticated():
+    return session.get("authenticated", False)
+
+
+@app.before_request
+def require_authentication():
+    if request.method == "OPTIONS":
+        return None
+
+    endpoint = request.endpoint or ""
+    public_endpoints = {"login", "logout", "auth_status", "health", "serve_frontend"}
+    if endpoint in public_endpoints:
+        return None
+
+    # Allow serving built static assets required to render the login page
+    if request.path.startswith("/static") or request.path.startswith("/assets"):
+        return None
+
+    if not _is_authenticated():
+        return jsonify({"error": "Authentication required"}), 401
+
+
+@app.route("/auth/login", methods=["POST"])
+def login():
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password")
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
+    if password != ACCESS_PASSWORD:
+        return jsonify({"error": "Invalid password"}), 401
+
+    session["authenticated"] = True
+    return jsonify({"authenticated": True}), 200
+
+
+@app.route("/auth/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"authenticated": False}), 200
+
+
+@app.route("/auth/status", methods=["GET"])
+def auth_status():
+    return jsonify({"authenticated": _is_authenticated()}), 200
 
 def process_files(html_file, excel_file):
     # Read Excel mapping (exact headers: Transporter ID, Name)
