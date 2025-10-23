@@ -1,14 +1,36 @@
 
+import hmac
 import os
 import tempfile
 import pandas as pd
-from flask import Flask, request, send_file, jsonify, send_from_directory
+from flask import (
+    Flask,
+    request,
+    send_file,
+    jsonify,
+    send_from_directory,
+    session,
+)
 from bs4 import BeautifulSoup
 
 app = Flask(__name__, static_folder=None)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "super-secret-key")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_BUILD = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "build"))
+ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD", "AjBH?D83784hgb")
+
+
+@app.before_request
+def enforce_password_protection():
+    open_endpoints = {"login", "health", "session_status", "serve_frontend"}
+    if request.endpoint in open_endpoints or request.method == "OPTIONS":
+        return
+    if session.get("authenticated"):
+        return
+    return jsonify({"error": "Unauthorized"}), 401
 
 def process_files(html_file, excel_file):
     # Read Excel mapping (exact headers: Transporter ID, Name)
@@ -57,12 +79,30 @@ def process_files(html_file, excel_file):
 
 @app.route("/process", methods=["POST"])
 def process():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Unauthorized"}), 401
     html_file = request.files.get("html_file")
     excel_file = request.files.get("excel_file")
     if not html_file or not excel_file:
         return jsonify({"error": "Both HTML and Excel files are required"}), 400
     out_path = process_files(html_file, excel_file)
     return send_file(out_path, as_attachment=True, download_name="report_with_names.html")
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password")
+    if not password or not hmac.compare_digest(str(password), str(ACCESS_PASSWORD)):
+        session.pop("authenticated", None)
+        return jsonify({"success": False, "error": "Invalid password"}), 401
+    session["authenticated"] = True
+    return jsonify({"success": True})
+
+
+@app.route("/session", methods=["GET"])
+def session_status():
+    return jsonify({"authenticated": bool(session.get("authenticated"))})
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
