@@ -18,7 +18,7 @@ docker-compose up --build
 Create a `.env` file in the project root before starting the server:
 
 ```
-ACCESS_PASSWORD=ABC99amzl00
+ACCESS_PASSWORD=
 # Optional: override the Flask session secret
 # FLASK_SECRET_KEY=replace-me
 ```
