@@ -14,6 +14,19 @@ docker-compose up --build
 - Flask API: http://localhost:5000
 - React dev server (optional): runs on port 45389 (see `frontend/package.json`), use `/process` for API.
 
+## 🔐 Configuration
+Create a `.env` file in the project root before starting the server:
+
+```
+ACCESS_PASSWORD=ABC99amzl00
+# Optional: override the Flask session secret
+# FLASK_SECRET_KEY=replace-me
+
+# Values can be wrapped in single or double quotes if needed.
+```
+
+The `.env` file is ignored by git to keep secrets out of version control.
+
 ## 📁 Structure
 ```
 daily_report_name_injector/

@@ -1,14 +1,56 @@
 
+import hmac
 import os
 import tempfile
+from pathlib import Path
 import pandas as pd
-from flask import Flask, request, send_file, jsonify, send_from_directory
+from flask import (
+    Flask,
+    request,
+    send_file,
+    jsonify,
+    send_from_directory,
+    session,
+)
 from bs4 import BeautifulSoup
 
+def load_env():
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    with env_path.open("r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            value = value.strip()
+            if value and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            os.environ[key] = value
+
+
+load_env()
+
+
 app = Flask(__name__, static_folder=None)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "super-secret-key")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_BUILD = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "build"))
+@app.before_request
+def enforce_password_protection():
+    open_endpoints = {"login", "health", "session_status", "serve_frontend"}
+    if request.endpoint in open_endpoints or request.method == "OPTIONS":
+        return
+    if session.get("authenticated"):
+        return
+    return jsonify({"error": "Unauthorized"}), 401
 
 def process_files(html_file, excel_file):
     # Read Excel mapping (exact headers: Transporter ID, Name)
@@ -57,12 +99,33 @@ def process_files(html_file, excel_file):
 
 @app.route("/process", methods=["POST"])
 def process():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Unauthorized"}), 401
     html_file = request.files.get("html_file")
     excel_file = request.files.get("excel_file")
     if not html_file or not excel_file:
         return jsonify({"error": "Both HTML and Excel files are required"}), 400
     out_path = process_files(html_file, excel_file)
     return send_file(out_path, as_attachment=True, download_name="report_with_names.html")
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password")
+    stored_password = os.environ.get("ACCESS_PASSWORD", "")
+    if not stored_password:
+        return jsonify({"success": False, "error": "Server misconfiguration: missing ACCESS_PASSWORD."}), 500
+    if not password or not hmac.compare_digest(str(password), str(stored_password)):
+        session.pop("authenticated", None)
+        return jsonify({"success": False, "error": "Invalid password"}), 401
+    session["authenticated"] = True
+    return jsonify({"success": True})
+
+
+@app.route("/session", methods=["GET"])
+def session_status():
+    return jsonify({"authenticated": bool(session.get("authenticated"))})
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
