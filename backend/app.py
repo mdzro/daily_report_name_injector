@@ -157,9 +157,31 @@ def auth_status():
 
 def process_files(html_file, excel_file):
     # Read Excel mapping (exact headers: Transporter ID, Name)
-    names_df = pd.read_excel(excel_file)
+    names_df = pd.read_excel(excel_file, dtype=str)
     names_df.columns = [c.strip() for c in names_df.columns]
-    name_map = dict(zip(names_df["Transporter ID"].astype(str), names_df["Name"].astype(str)))
+    names_df = names_df.fillna("")
+
+    def _normalize_cell(value):
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    transporter_ids = (
+        names_df.get("Transporter ID", pd.Series(dtype=str))
+        .map(_normalize_cell)
+        .reset_index(drop=True)
+    )
+    transporter_names = (
+        names_df.get("Name", pd.Series(dtype=str))
+        .map(_normalize_cell)
+        .reset_index(drop=True)
+    )
+
+    name_map = {
+        transporter_id: transporter_names.iloc[idx]
+        for idx, transporter_id in transporter_ids.items()
+        if transporter_id
+    }
 
     soup = BeautifulSoup(html_file.read(), "html.parser")
 
