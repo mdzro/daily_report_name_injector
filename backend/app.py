@@ -32,6 +32,88 @@ def _is_authenticated():
     return session.get("authenticated", False)
 
 
+def _get_span_value(cell, attr):
+    try:
+        return int(cell.get(attr, 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _iter_cells_with_positions(rows, cell_tags=("td", "th"), span_map=None):
+    span_map = {} if span_map is None else span_map
+    for tr in rows:
+        layout = []
+        col_idx = 0
+        direct_cells = [cell for cell in tr.find_all(cell_tags, recursive=False)]
+        cell_index = 0
+
+        while cell_index < len(direct_cells):
+            while col_idx in span_map:
+                span_info = span_map[col_idx]
+                layout.append(
+                    {
+                        "cell": span_info["cell"],
+                        "column": col_idx,
+                        "origin": "span",
+                    }
+                )
+                span_info["remaining"] -= 1
+                if span_info["remaining"] == 0:
+                    del span_map[col_idx]
+                col_idx += 1
+
+            cell = direct_cells[cell_index]
+            colspan = _get_span_value(cell, "colspan")
+            rowspan = _get_span_value(cell, "rowspan")
+
+            for offset in range(colspan):
+                current_col = col_idx + offset
+                layout.append({"cell": cell, "column": current_col, "origin": "direct"})
+                if rowspan > 1:
+                    span_map[current_col] = {
+                        "cell": cell,
+                        "remaining": rowspan - 1,
+                    }
+
+            col_idx += colspan
+            cell_index += 1
+
+        while True:
+            remaining_cols = [idx for idx in span_map if idx >= col_idx]
+            if not remaining_cols:
+                break
+            next_col = min(remaining_cols)
+            while col_idx < next_col:
+                col_idx += 1
+            span_info = span_map[next_col]
+            layout.append(
+                {
+                    "cell": span_info["cell"],
+                    "column": next_col,
+                    "origin": "span",
+                }
+            )
+            span_info["remaining"] -= 1
+            if span_info["remaining"] == 0:
+                del span_map[next_col]
+            col_idx = next_col + 1
+
+        yield tr, sorted(layout, key=lambda entry: entry["column"])
+
+
+def _shift_span_map(span_map, start_index):
+    if not span_map:
+        return
+    shifted = {}
+    for col, info in span_map.items():
+        if col >= start_index:
+            shifted[col + 1] = info
+        else:
+            shifted[col] = info
+    span_map.clear()
+    span_map.update(shifted)
+
+
 @app.before_request
 def require_authentication():
     if request.method == "OPTIONS":
@@ -96,8 +178,22 @@ def process_files(html_file, excel_file):
             continue
 
         header_cells = header_row.find_all("th")
-        headers = [th.get_text(strip=True) for th in header_cells]
-        transporter_index = headers.index("Transporter ID")
+        transporter_index = None
+        transporter_header_cell = None
+        current_col = 0
+        for th in header_cells:
+            header_text = th.get_text(strip=True)
+            colspan = _get_span_value(th, "colspan")
+            if header_text == "Transporter ID":
+                transporter_index = current_col
+                transporter_header_cell = th
+                break
+            current_col += colspan
+
+        if transporter_index is None:
+            continue
+
+        name_col_index = transporter_index + 1
 
         # Ensure the header row is inside a <thead>
         if header_row.parent.name != "thead":
@@ -120,29 +216,115 @@ def process_files(html_file, excel_file):
                 tbody.append(row.extract())
             table.append(tbody)
 
-        # Always place the Name header immediately after Transporter ID
-        if len(header_cells) <= transporter_index + 1 or header_cells[transporter_index + 1].get_text(strip=True) != "Name":
-            name_th = soup.new_tag("th")
-            name_th.string = "Name"
-            header_cells[transporter_index].insert_after(name_th)
-            header_cells = header_row.find_all("th")
+        header_layout_iter = _iter_cells_with_positions([header_row], ("th",), {})
+        try:
+            _, header_layout = next(header_layout_iter)
+        except StopIteration:
+            header_layout = []
+        existing_name_entry = next(
+            (
+                entry
+                for entry in header_layout
+                if entry["column"] == name_col_index
+                and entry["cell"].get_text(strip=True) == "Name"
+            ),
+            None,
+        )
 
-        name_col_index = transporter_index + 1
+        if existing_name_entry:
+            name_header_cell = existing_name_entry["cell"]
+        else:
+            name_header_cell = soup.new_tag("th")
+            name_header_cell.string = "Name"
+            if transporter_header_cell:
+                for attr, value in transporter_header_cell.attrs.items():
+                    if attr in {"colspan", "id"}:
+                        continue
+                    if attr == "class":
+                        name_header_cell[attr] = (
+                            list(value) if isinstance(value, (list, tuple)) else value
+                        )
+                    else:
+                        name_header_cell[attr] = value
+            transporter_header_cell.insert_after(name_header_cell)
 
-        # Insert or update the Name cell for each data row
-        for tr in table.find_all("tr"):
-            tds = tr.find_all("td")
-            if not tds or len(tds) <= transporter_index:
+        header_rows = []
+        for candidate in table.find_all("tr"):
+            if candidate.find_all("th"):
+                header_rows.append(candidate)
+            elif header_rows:
+                break
+
+        header_span_tracker = {}
+        cell_column_map = {}
+        for _, row_entries in _iter_cells_with_positions(
+            header_rows, ("th",), header_span_tracker
+        ):
+            for entry in row_entries:
+                cell_column_map.setdefault(entry["cell"], set()).add(entry["column"])
+
+        for cell, columns in cell_column_map.items():
+            if cell in {transporter_header_cell, name_header_cell}:
                 continue
-            transporter_id = tds[transporter_index].get_text(strip=True)
-            name_val = name_map.get(transporter_id, "")
+            if transporter_index in columns:
+                updated_colspan = _get_span_value(cell, "colspan") + 1
+                cell["colspan"] = str(updated_colspan)
 
-            if len(tds) > name_col_index:
-                tds[name_col_index].string = name_val
-            else:
+        for tbody_section in table.find_all("tbody"):
+            body_span_tracker = {}
+            for tr, layout in _iter_cells_with_positions(
+                tbody_section.find_all("tr"), ("td", "th"), body_span_tracker
+            ):
+                if not tr.find_all("td"):
+                    continue
+
+                transporter_entry = next(
+                    (entry for entry in layout if entry["column"] == transporter_index),
+                    None,
+                )
+                if not transporter_entry:
+                    continue
+
+                transporter_cell = transporter_entry["cell"]
+                if (
+                    transporter_entry["origin"] != "direct"
+                    or transporter_cell.parent is not tr
+                ):
+                    continue
+
+                transporter_id = transporter_cell.get_text(strip=True)
+                name_val = name_map.get(transporter_id, "")
+
+                name_entry = next(
+                    (entry for entry in layout if entry["column"] == name_col_index),
+                    None,
+                )
+
+                if (
+                    name_entry
+                    and name_entry["origin"] == "direct"
+                    and name_entry["cell"].parent is tr
+                ):
+                    name_cell = name_entry["cell"]
+                    name_cell.clear()
+                    name_cell.append(name_val)
+                    continue
+
                 name_td = soup.new_tag("td")
                 name_td.string = name_val
-                tds[transporter_index].insert_after(name_td)
+                transporter_cell.insert_after(name_td)
+
+                transporter_rowspan = _get_span_value(transporter_cell, "rowspan")
+                if transporter_rowspan > 1:
+                    name_td["rowspan"] = transporter_rowspan
+
+                _shift_span_map(body_span_tracker, name_col_index)
+
+                if transporter_rowspan > 1:
+                    body_span_tracker[name_col_index] = {
+                        "cell": name_td,
+                        "remaining": transporter_rowspan - 1,
+                    }
 
         table_classes = table.get("class", [])
         if "modern-table" not in table_classes:
