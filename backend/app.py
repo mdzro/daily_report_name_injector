@@ -155,6 +155,32 @@ def logout():
 def auth_status():
     return jsonify({"authenticated": _is_authenticated()}), 200
 
+def _candidate_transporter_keys(raw_value):
+    if not raw_value:
+        return []
+
+    base_value = raw_value.strip()
+    if not base_value:
+        return []
+
+    keys = [base_value]
+
+    collapsed_spaces = " ".join(base_value.split())
+    if collapsed_spaces and collapsed_spaces not in keys:
+        keys.append(collapsed_spaces)
+
+    digits_only = "".join(ch for ch in base_value if ch.isdigit())
+    if digits_only and digits_only not in keys:
+        keys.append(digits_only)
+
+    if digits_only:
+        stripped_digits = digits_only.lstrip("0") or "0"
+        if stripped_digits and stripped_digits not in keys:
+            keys.append(stripped_digits)
+
+    return keys
+
+
 def process_files(html_file, excel_file):
     # Read Excel mapping (exact headers: Transporter ID, Name)
     names_df = pd.read_excel(excel_file, dtype=str)
@@ -177,11 +203,17 @@ def process_files(html_file, excel_file):
         .reset_index(drop=True)
     )
 
-    name_map = {
-        transporter_id: transporter_names.iloc[idx]
-        for idx, transporter_id in transporter_ids.items()
-        if transporter_id
-    }
+    name_map = {}
+    for idx, transporter_id in transporter_ids.items():
+        if not transporter_id:
+            continue
+
+        name_value = transporter_names.iloc[idx]
+        if not name_value:
+            continue
+
+        for key in _candidate_transporter_keys(transporter_id):
+            name_map.setdefault(key, name_value)
 
     soup = BeautifulSoup(html_file.read(), "html.parser")
 
@@ -315,7 +347,12 @@ def process_files(html_file, excel_file):
                     continue
 
                 transporter_id = transporter_cell.get_text(strip=True)
-                name_val = name_map.get(transporter_id, "")
+
+                name_val = ""
+                for key in _candidate_transporter_keys(transporter_id):
+                    if key in name_map:
+                        name_val = name_map[key]
+                        break
 
                 name_entry = next(
                     (entry for entry in layout if entry["column"] == name_col_index),
