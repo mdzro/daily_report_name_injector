@@ -1,6 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import AnimatedLogo from './components/AnimatedLogo';
 
 axios.defaults.withCredentials = true;
 
@@ -94,6 +95,7 @@ function App() {
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-8">
+        <AnimatedLogo />
         <div className="bg-white p-8 rounded-2xl shadow-lg w-full max-w-md">
           <h1 className="text-2xl font-bold mb-6 text-center text-blue-700">Daily Report Name Injector</h1>
           <form onSubmit={handleLogin} className="flex flex-col gap-4">
@@ -123,6 +125,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-8">
+      <AnimatedLogo />
       <div className="bg-white p-8 rounded-2xl shadow-lg w-full max-w-md">
         <h1 className="text-2xl font-bold mb-6 text-center text-blue-700">Daily Report Name Injector</h1>
         <div className="flex justify-end mb-4">
